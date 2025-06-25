@@ -92,4 +92,10 @@ Encrypted socket implemented in the Linux kernel.
       ![recv](/assets/example_recv.png)
     * The message was decrypted by the kernel (`dmesg`):
       ![recv_kernel](assets/example_recv_kernel.png)
-  
+
+## Implementation
+
+* All the modifications was added over the `net/socket.c` file in the kernel code
+* I added the original file in a different commit, so it's easy to see the modifications
+* The added code is quiet documented, but a more comprehensive documentation will be added here __shortly__
+* __The code located here:__ [`/kernel/socket.c`](/kernel/socket.c)

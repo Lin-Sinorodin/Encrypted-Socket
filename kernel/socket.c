@@ -107,6 +107,15 @@
 #include <linux/errqueue.h>
 #include <linux/ptp_clock_kernel.h>
 
+/* Socket encryption. key starts at bit (enc_flag + 1) */
+#define SOCK_DECRYPT 8           // set decrypt flag
+#define SOCK_ENCRYPT 9           // set encrypt flag
+#define SOCK_ENCRYPT_MASK 0xff   // encrypt key mask (0xff = one byte)
+
+#define ICMP_HEADER_SIZE 64
+#define ICMP_ECHO_REQUEST 8
+#define ERROR -1
+
 #ifdef CONFIG_NET_RX_BUSY_POLL
 unsigned int sysctl_net_busy_read __read_mostly;
 unsigned int sysctl_net_busy_poll __read_mostly;
@@ -615,6 +624,184 @@ static const struct inode_operations sockfs_inode_ops = {
 	.setattr = sockfs_setattr,
 };
 
+/*
+ * Encryption functions
+ */
+
+/* Copy byte from kernel space to user space, based on copyout from iov_iter.c */
+static int copy_byte_kernel_to_user(void __user *to, const void *from) {
+	size_t n = 1;  // only one byte
+	instrument_copy_to_user(to, from, n);
+	n = raw_copy_to_user(to, from, n);
+	return n;
+}
+
+/* Copy byte from user space to kernel space, based on copyin from iov_iter.c */
+static int copy_byte_user_to_kernel(void *to, const void __user *from) {
+	size_t n = 1;  // only one byte
+	size_t res = n;
+	instrument_copy_from_user_before(to, from, n);
+	res = raw_copy_from_user(to, from, n);
+	instrument_copy_from_user_after(to, from, n, res);
+	return res;
+}
+
+/* Apply bit wise xor on the given iovec (userland data) with the gievn key. */
+void bitwise_xor_iovec(const struct iovec __user *iov, const unsigned long key) {
+    char temp;  // hold the byte from the userand xor with key in kernel
+    for(int i = 0; i < iov->iov_len; i++) {
+        copy_byte_user_to_kernel(&temp, iov->iov_base + i);
+        temp ^= (char)key;
+        copy_byte_kernel_to_user(iov->iov_base + i, &temp);
+    }
+}
+
+/* Extract the DECRYPT flag from the socket. */
+unsigned long get_decrypt_flag(struct socket *sock) {
+    return (sock->flags >> SOCK_DECRYPT) & 1;
+}
+
+/* Extract the ENCRYPT flag from the socket. */
+unsigned long get_encrypt_flag(struct socket *sock) {
+    return (sock->flags >> SOCK_ENCRYPT) & 1;
+}
+
+/* Extract the ENCRYPT key from the socket. */
+unsigned long get_encrypt_key(struct socket *sock) {
+    return (sock->flags >> (SOCK_ENCRYPT + 1)) & SOCK_ENCRYPT_MASK;
+}
+
+/* Set the DECRYPT flag in the socket. */
+void set_decrypt_flag(struct socket *sock) {
+    sock->flags |= 1 << SOCK_DECRYPT;
+}
+
+/* Set the ENCRYPT flag in the socket. */
+void set_encrypt_flag(struct socket *sock) {
+    sock->flags |= 1 << SOCK_ENCRYPT;
+}
+
+/* Set the ENCRYPT key in the socket. */
+void set_encrypt_key(struct socket *sock, unsigned long key) {
+    sock->flags |= (key & SOCK_ENCRYPT_MASK) << (SOCK_ENCRYPT + 1);
+}
+
+/* Generate random key (1 byte) and store it in the socket flags */
+void encrypt_in_flags(struct socket *sock) {
+    unsigned long key;
+    get_random_bytes(&key, sizeof(key));
+    set_encrypt_flag(sock);
+    set_encrypt_key(sock, key);
+}
+
+/* Construct the ICMP message for the ping with key */
+void set_ping_encryption_message(char* icmphdr, char key) {
+    char icmp_type = ICMP_ECHO_REQUEST;
+    char icmp_code = 0;
+    short icmp_id = 0;
+    short icmp_seq = 1;
+    short icmp_checksum = 0xffff - icmp_type - icmp_code - icmp_id - icmp_seq - key;
+
+    memset(icmphdr, 0, ICMP_HEADER_SIZE);
+    memcpy(icmphdr, &icmp_type, 1);
+    memcpy(icmphdr + 1, &icmp_code, 1);
+    memcpy(icmphdr + 2, &icmp_checksum, 2);
+    memcpy(icmphdr + 4, &icmp_id, 2);
+    memcpy(icmphdr + 6, &icmp_seq, 2);
+    memcpy(icmphdr + 8, &key, 1);  // payload starts here
+}
+
+
+/* Initialize a raw ICMP socket. */
+int initialize_icmp_socket(struct socket* sock) {
+    // Initialize socket
+    int fd = __sys_socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    if (fd < 0) {
+        pr_err("[init_raw] failed to initialize socket, exiting...\n");
+        return ERROR;
+    }
+
+    // Get the socket object from fd
+    int err = 0;
+    sock = sockfd_lookup(fd, &err);
+    if (err < 0) {
+        pr_err("[init_raw] failed to get socket object (err: %d)\n", err);
+        return ERROR;
+    }
+    return fd
+}
+
+/* Send the ENCRYPT key over a ping message to the given address. */
+int ping_send_encryption(char key, struct sockaddr_storage address,  int addr_len) {
+    struct kvec kvec;
+    struct msghdr msg;
+    struct socket* sock;
+    char ping_msg[ICMP_HEADER_SIZE];
+
+    if (initialize_icmp_socket(sock) < 0) {
+        return ERROR;
+    }
+
+    // Initialize data iterator, kvec for kernel data
+    set_ping_encryption_message(ping_msg, key);
+    kvec.iov_base = ping_msg;
+    kvec.iov_len = sizeof(ping_msg);
+    iov_iter_kvec(&msg.msg_iter, ITER_SOURCE, &kvec, 1, kvec.iov_len);
+
+    // Initialize messgae with dest address
+    msg.msg_name = (struct sockaddr*)&address;
+    msg.msg_namelen = addr_len;
+    msg.msg_control = NULL;
+    msg.msg_controllen = 0;
+    msg.msg_ubuf = NULL;
+    msg.msg_flags = 0;
+
+    // Send the message over the socket
+    int err = sock->ops->sendmsg(sock, &msg, msg_len);
+    if (err < 0) {
+        pr_err("[ping_send_encryption] failed sending ping message\n");
+        return err;
+    }
+    pr_info("[ping_send_encryption] sent encryption key: %lu\n", key);
+    return err;
+}
+
+/* Read the ENCRYPT key from a ping message. */
+unsigned long ping_recv_encryption(void* dummy) {
+    struct kvec kvec;
+    struct msghdr msg = {};
+    struct socket* sock;
+    struct sockaddr_storage addr;
+
+    if (initialize_icmp_socket(sock) < 0) {
+        return ERROR;
+    }
+
+    // Initialize the message object
+    char ping_msg[ICMP_HEADER_SIZE];  // buffer for the message
+    kvec.iov_base = ping_msg;
+    kvec.iov_len = sizeof(ping_msg);
+    msg.msg_name = &addr;
+    msg.msg_namelen = 0;
+    iov_iter_kvec(&msg.msg_iter, ITER_DEST, &kvec, 1, kvec.iov_len);
+
+    // Receive the message
+    sock->flags ^= 1 << SOCK_DECRYPT;  // disable decrypt to get ping as is
+    int err = sock_recvmsg(sock, &msg, 0);
+    sock->flags |= 1 << SOCK_DECRYPT;  // restore decrypt
+    if (err < 0) {
+        pr_err("[ping_recv_encryption] failed receiving ping message\n");
+        return err;
+    }
+
+    // Extract the key from message
+    int payload_start = 20 + 8; // IP header + ICMP header
+    unsigned long key = (unsigned long)ping_msg[payload_start];
+    pr_info("[ping_recv_encryption] extracted decryption key: %lu\n", key);
+
+    return key;
+}
+
 /**
  *	sock_alloc - allocate a socket
  *
@@ -724,9 +911,23 @@ static inline int sock_sendmsg_nosec(struct socket *sock, struct msghdr *msg)
 
 static int __sock_sendmsg(struct socket *sock, struct msghdr *msg)
 {
+    const struct iovec *iov;  // store the message buffer in userspace
+    unsigned long key;
+    if (get_encrypt_flag(sock)) {
+        key = get_encrypt_key(sock);
+        iov = msg->msg_iter.iov;
+        bitwise_xor_iovec(iov, key);
+        pr_info("[sock_sendmsg] Encrypted message with key: %lu\n", key);
+    }
 	int err = security_socket_sendmsg(sock, msg,
 					  msg_data_left(msg));
 
+    if (get_encrypt_flag(sock)) {
+        // need to restore message in userspace after sending
+        err = err ?: sock_sendmsg_nosec(sock, msg);
+        bitwise_xor_iovec(iov, key);
+        return err;
+    }
 	return err ?: sock_sendmsg_nosec(sock, msg);
 }
 
@@ -1036,8 +1237,16 @@ static inline int sock_recvmsg_nosec(struct socket *sock, struct msghdr *msg,
 int sock_recvmsg(struct socket *sock, struct msghdr *msg, int flags)
 {
 	int err = security_socket_recvmsg(sock, msg, msg_data_left(msg), flags);
+    err = err ?: sock_recvmsg_nosec(sock, msg, flags);
 
-	return err ?: sock_recvmsg_nosec(sock, msg, flags);
+    if (get_decrypt_flag(sock)) {
+        const struct iovec __user *iov = msg->msg_iter.iov;
+        unsigned long key = get_encrypt_key(sock);
+        bitwise_xor_iovec(iov, key);
+        pr_info("[recvmsg] Decrypted message with key: %lu\n", key);
+    }
+
+	return err;
 }
 EXPORT_SYMBOL(sock_recvmsg);
 
@@ -1668,6 +1877,16 @@ int __sys_socket(int family, int type, int protocol)
 	struct socket *sock;
 	int flags;
 
+    // remove encryption/decryption flags before generating the socket as it's unknown flag
+    int dec_flag = (type >> SOCK_DECRYPT) & 1;
+    int enc_flag = (type >> SOCK_ENCRYPT) & 1;
+    if (dec_flag) {
+        type ^= 1 << SOCK_DECRYPT;  // decryption flag bit from 1 to 0
+    }
+	if (enc_flag) {
+		type ^= 1 << SOCK_ENCRYPT;  // encryption flag bit from 1 to 0
+	}
+
 	sock = __sys_socket_create(family, type, protocol);
 	if (IS_ERR(sock))
 		return PTR_ERR(sock);
@@ -1675,6 +1894,19 @@ int __sys_socket(int family, int type, int protocol)
 	flags = type & ~SOCK_TYPE_MASK;
 	if (SOCK_NONBLOCK != O_NONBLOCK && (flags & SOCK_NONBLOCK))
 		flags = (flags & ~SOCK_NONBLOCK) | O_NONBLOCK;
+
+    // the socket is initialized in the regular way expected by the kernel
+    // now, we are free to abuse the socket flags and save there our encryption flags and data
+    if (dec_flag) {
+        set_decrypt_flag(sock);
+        pr_info("[socket] Initialized decrypting socket (flag = %lu)\n",
+                get_decrypt_flag(sock));
+    }
+	if (enc_flag) {
+        encrypt_in_flags(sock);
+		pr_info("[socket] Initialized encrypting socket (flag = %lu, key = %lu)\n",
+				get_encrypt_flag(sock), get_encrypt_key(sock));
+	}
 
 	return sock_map_fd(sock, flags & (O_CLOEXEC | O_NONBLOCK));
 }
@@ -1936,6 +2168,26 @@ static int __sys_accept4_file(struct file *file, struct sockaddr __user *upeer_s
 		return PTR_ERR(newfile);
 	}
 	fd_install(newfd, newfile);
+
+    // Check if this socket is supposed to decrypt the data, get key if yes
+    int decrypt = 0;
+    unsigned long key;
+    struct socket* sock = sock_from_file(file);
+    if (sock) {
+        if (get_decrypt_flag(sock)) {
+            decrypt = 1;
+            key = ping_recv_encryption(NULL);
+            pr_info("[accept] Received key from ping: %lu\n", key);
+        }
+    }
+
+    // update the key in the flags of the new socket
+    if (decrypt) {
+        sock = sock_from_file(newfile);
+        set_decrypt_flag(sock);
+        set_encrypt_key(sock, key);
+    }
+
 	return newfd;
 }
 
@@ -2027,6 +2279,17 @@ int __sys_connect(int fd, struct sockaddr __user *uservaddr, int addrlen)
 		if (!ret)
 			ret = __sys_connect_file(f.file, &address, addrlen, 0);
 		fdput(f);
+
+        struct socket *sock = sock_from_file(f.file);
+        if (sock) {
+            if (get_encrypt_flag(sock)) {
+                unsigned long key = get_encrypt_key(sock);
+                pr_info("[connect] Encrypted socket, key: %lu\n", key);
+                msleep(100);
+                ping_send_encryption((char)key, address, addrlen);
+                msleep(100);
+            }
+        }
 	}
 
 	return ret;
