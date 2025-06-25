@@ -40,7 +40,7 @@ int connectClient(int fd) {
         exit(0);
     }
     else
-        printf("[+] socket successfully binded..\n");
+        printf("[+] socket binded\n");
 
     // Now server is ready to listen and verification
     if ((listen(fd, 5)) != 0) {
@@ -59,7 +59,7 @@ int connectClient(int fd) {
         exit(0);
     }
     else
-        printf("[+] server accept the client\n");
+        printf("[+] server accepted a client\n");
 
     return conn;
 }
@@ -68,7 +68,7 @@ int connectClient(int fd) {
 void sendMessage(int fd) {
     char msg[] = "Hello from client";
     send(fd, msg, sizeof(msg), 0);
-    printf("[+] sent a message to the server: %s\n", msg);
+    printf("[+] sent a message to the client: %s\n", msg);
 }
 
 
@@ -76,7 +76,7 @@ void recvMessage(int fd) {
     char buff[BUFF];
     bzero(buff, sizeof(buff));
     recv(fd, buff, sizeof(buff), 0);
-    printf("[+] received a message from the server: %s\n", buff);
+    printf("[+] received a message from the client: %s\n", buff);
 }
 
 
