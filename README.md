@@ -42,7 +42,7 @@ Encrypted socket implemented in the Linux kernel.
       ```c
       int fd = socket(AF_INET, SOCK_STREAM | (1 << SOCK_DECRYPT), 0);
       ```
-### Example Scripts
+### POC Scripts
 
 * To demonstrate the simplicity of this method, minimal scripts for client and server are provided
 * One can notice that this scripts looks like any other basic server/client script in `c`!
@@ -58,3 +58,38 @@ Encrypted socket implemented in the Linux kernel.
   * Path: [`/socket_scripts/server.c`](/socket_scripts/server.c)
   * Compile: `gcc /socket_scripts/server.c -o server`
   * Run: `sh ./server`
+
+### Example (POC Scripts)
+
+* Initialized a vm with the modified kernel, following the instructions above
+* Cloned the vm, and changed the mac address of the cloned machine (to get a new `IP` address)
+* defined second machine as server (receiving) and found its IP with:
+  ```bash
+  ip -4 addr show scope global | grep inet | awk '{print $2}'
+  ```
+* Followed this steps (in this order):
+  * Copied the client/server scripts for each machine and compiled it (after updating `IP` in both scripts)
+  * __Server:__ 
+    * Started the server `sh ./server`
+    * The server in listening mode, waiting for connection
+  * __Client:__
+    * Launched `tcpdump` to sniff the message:
+      ```bash
+      sudo tcpdump -A -X tcp and dst 192.168.64.14 and "tcp[tcpflags] & tcp-ack == 0"
+      ```
+    * Started the client `sh ./client`
+    * Checked the kernel logs with `sudo dmesg`
+* __Result:__
+  * __Client:__
+    * The client script sent `Hello from client`:
+      ![send](/assets/example_send.png)
+    * The message was encrypted by the kernel, with key `35` (`dmesg`):
+      ![send_kernel](/assets/example_send_kernel.png)
+    * The message cought by `tcpdump` is clearly encryped:
+      ![send_tcpdump](/assets/example_tcpdump.png)
+  * __Server:__
+    * The server reconstructed the message:
+      ![recv](/assets/example_recv.png)
+    * The message was decrypted by the kernel (`dmesg`):
+      ![recv_kernel](assets/example_recv_kernel.png)
+  
