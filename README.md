@@ -2,7 +2,10 @@
 
 ## Summary
 
-Encrypted socket implemented in the Linux kernel.
+Encrypted socket implemented in the Linux kernel:
+* The encryption process is done internally by the (modified) linux kernel
+* The user can just use the normal socket syscalls (with a slight modification detailed below)
+* This repo provides detailed setup instructions, POC scripts, and implementation details
 
 ## Environment
 
@@ -12,6 +15,7 @@ Encrypted socket implemented in the Linux kernel.
 * Linux VM running on UTM:
   * Distribution: `Debian 12.2.0-14` from [UTM gallery](https://mac.getutm.app/gallery/debian-12)
   * Kernel version (`uname -r`): `6.1.0-13-arm64`
+  * Corresponds to [linux v6.1.140](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/net?h=v6.1.140)
 
 ## Setup
 
@@ -99,3 +103,14 @@ Encrypted socket implemented in the Linux kernel.
 * I added the original file in a different commit, so it's easy to see the modifications
 * The added code is quiet documented, but a more comprehensive documentation will be added here __shortly__
 * __The code located here:__ [`/kernel/socket.c`](/kernel/socket.c)
+
+## Useful tools
+
+* Linux stable source code [linux v6.1.140](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/net?h=v6.1.140)
+* [bootlin](https://elixir.bootlin.com/linux/v6.1.140/source/net/socket.c) -
+  Elixir Cross Referencer, great for navigating the code
+* How to make a [private fork in GitHub](https://stackoverflow.com/questions/10065526/github-how-to-make-a-fork-of-public-repository-private/63680732#63680732)
+* man pages for the socket syscalls (
+  [`socket(2)`](https://man7.org/linux/man-pages/man2/socket.2.html)
+  ,[`connect(2)`](https://man7.org/linux/man-pages/man2/connect.2.html), etc.)
+* [A Guide to Using Raw Sockets](https://www.opensourceforu.com/2015/03/a-guide-to-using-raw-sockets/)
