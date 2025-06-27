@@ -164,3 +164,9 @@ and can be edited online with [drawio](https://www.drawio.com/)
   [`socket(2)`](https://man7.org/linux/man-pages/man2/socket.2.html)
   ,[`connect(2)`](https://man7.org/linux/man-pages/man2/connect.2.html), etc.)
 * [A Guide to Using Raw Sockets](https://www.opensourceforu.com/2015/03/a-guide-to-using-raw-sockets/)
+
+## Next steps
+
+- [ ] Allow both sides (server and client) to encrypt and decrypt
+- [ ] Add a reply in the `connect`-`accept` to notify the client the server actually got the key
+- [ ] Add support for better encryption algorithms instead of byte-wise xor
