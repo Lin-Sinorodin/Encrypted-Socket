@@ -99,10 +99,60 @@ Encrypted socket implemented in the Linux kernel:
 
 ## Implementation
 
-* All the modifications was added over the `net/socket.c` file in the kernel code
-* I added the original file in a different commit, so it's easy to see the modifications
-* The added code is quiet documented, but a more comprehensive documentation will be added here __shortly__
-* __The code located here:__ [`/kernel/socket.c`](/kernel/socket.c)
+* All the modifications was added over the __`net/socket.c`__ file in the kernel code
+* I added the original file in an initial commit, so it's easy to see the modifications with git diff
+* The added code is quiet documented, but a more comprehensive documentation will be added here
+* __The modified code located here:__ [`/kernel/socket.c`](/kernel/socket.c)
+* A scheme draw of the implementation is at [`/assets/implementation.drawio`](/assets/implementation.drawio) 
+and can be edited online with [drawio](https://www.drawio.com/)
+
+### Technical details
+
+* The code implements a way to communicate between 2 sockets in an encrypted way
+* The process assumed connection based sockets (`TCP`)
+* The process is as detailed in this figure:
+  ![/assets/implementation.svg](/assets/implementation.svg)
+* Most of the socket module kept untouched, only the modifications will be documented below
+* __Client:__
+  * `socket()`
+    * [`User`] The user creates a `TCP` socket with encrypt flag, passed to the `type` field
+      ```c
+      int fd = socket(AF_INET, SOCK_STREAM | (1 << SOCK_ENCRYPT), 0);
+      ```
+    * [`Kernel`] Generates random one char encryption key
+    * [`Kernel`] store the encryption flag and key in the flags field of `struct socket`
+  * `connect()`
+    * [`Kernel`] Creates a raw socket
+    * [`Kernel`] Send a ping (`ICMP Echo`) with key as its payload to the server
+  * `send()`
+    * [`User`] Send a message:
+      ```c
+      char msg[] = "Hello from client";
+      send(fd, msg, sizeof(msg), 0);
+      ```
+    * [`Kernel`] Encrypts the data using byte-wise xor with the key
+* __Server:__
+  * `socket()`
+    * [`User`] The user creates a `TCP` socket with decrypt flag, passed to the `type` field
+      ```c
+      int fd = socket(AF_INET, SOCK_STREAM | (1 << SOCK_DECRYPT), 0);
+      ```
+    * [`Kernel`] store the decryption flag in the flags field of `struct socket`
+  * `accept()`
+    * [`Kernel`] Creates a raw socket
+    * [`Kernel`] Recv a ping (`ICMP Echo`) with key as its payload from the client
+    * [`Kernel`] store the encryption key in the flags field of `struct socket`
+  * `recv()`
+    * [`User`] Receive a message:
+      ```c
+      char buff[BUFF];
+      bzero(buff, sizeof(buff));
+      recv(fd, buff, sizeof(buff), 0);
+      ```
+    * [`Kernel`] Decrypts the data using byte-wise xor with the key
+* This way:
+  * The user uses the regular socket interface with almost no changes
+  * The data is encrypted secretly and effortlessly by the kernel socket handling
 
 ## Useful tools
 
